@@ -965,12 +965,80 @@ class Validate(Preparation):
                    "See `/srv/pillar/ceph/deepsea_minions.sls` for details")
             self.errors['deepsea_minions'] = [msg]
 
+    def config_check(self):
+        issue_map = ConfigCheck().run()
+        for fn, kv_map in issue_map.items():
+            for k, v in kv_map.items():
+                if not v:
+                    msg = "Key {} is deprecated please remove it from your config".format(k)
+                else:
+                    v = '/'.join(v)
+                    msg = "Key {} with value(s) {} was found (deprecated)".format(k, v)
+
+                self.errors["{}::{}".format(fn,k)] = msg
+
     def report(self):
         """
         Print the validation report
         """
         self.printer.add(self.name, self.passed, self.errors, self.warnings)
         self.printer.print_result()
+
+
+class ConfigCheck(object):
+    def __init__(self):
+
+        self.conf_path = '/srv/salt/ceph/configuration/files/ceph.conf.d'
+        self.suffix = '.conf'
+        self.files = glob.glob("{path}/*{suffix}".format(path=self.conf_path,
+                                                         suffix=self.suffix))
+
+        self.map = {'foo': 'bar',
+                    'multi': ['baz', 'qox'],
+                    'fulti': 'mox',
+                    'dummy': ['value'],
+                    'depre': []}
+        self.issues = {}
+
+    def read_lines(self, fn):
+        with open(fn, 'r') as _fd:
+            for line in _fd.readlines():
+                yield line
+
+    def extract_k_v(self, line):
+        k, v = line.split('=')
+        return k.strip(), v.strip()
+
+    def check_line(self, line):
+        k, v = self.extract_k_v(line)
+        return self.compare_k_v_to_map(k, v)
+
+    def compare_k_v_to_map(self, k, v):
+        found_issues = {}
+        found_issues[k] = []
+        if k not in self.map:
+            return found_issues
+        if isinstance(self.map[k], list):
+            for depr_val in self.map[k]:
+                if v == depr_val:
+                    found_issues[k].append(v)
+        if isinstance(self.map[k], str):
+            found_issues[k] = [v]
+        return found_issues
+
+    def run(self):
+        for fn in self.files:
+            self.issues[fn] = {}
+            for line in self.read_lines(fn):
+                found = self.check_line(line)
+                key = [x for x in found.keys()][0]
+                values = [x for x in found.values()][0]
+                if self.issues[fn].get(key):
+                    self.issues[fn][key].extend(values)
+                else:
+                    self.issues[fn].update(found)
+        print(self.issues)
+        return self.issues
 
 
 def help_():
@@ -1051,6 +1119,25 @@ def discovery(cluster=None, printer=None, **kwargs):
         valid.profiles_populated()
     valid.report()
 
+    if valid.errors:
+        return False
+
+    return True
+
+
+def config_check(cluster=None, printer=None, **kwargs):
+    if not cluster:
+        usage(func='pillar')
+        exit(1)
+
+    # Restrict search to this cluster
+    search = "I@cluster:{}".format(cluster)
+
+    printer = get_printer(**kwargs)
+    valid = Validate(cluster, search_pillar=True, search_grains=True,
+                     printer=printer, search=search)
+    valid.config_check()
+    valid.report()
     if valid.errors:
         return False
 
