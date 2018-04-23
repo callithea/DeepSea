@@ -1,11 +1,12 @@
 import pytest
 import salt.client
 import sys
+import types
 sys.path.insert(0, 'srv/salt/_modules')
 sys.path.insert(0, 'srv/modules/runners')
 sys.path.insert(0, 'srv/modules/runners/utils')
 
-from mock import patch, MagicMock
+from mock import patch, MagicMock, mock_open
 from srv.modules.runners import validate
 
 
@@ -269,3 +270,36 @@ class TestValidation():
         assert len(validator.warnings) == 0
         validator.salt_version()
         assert 'not supported' in validator.warnings['salt_version'][0]
+
+
+class TestConfigCheck():
+
+    @pytest.fixture(scope='class')
+    def fxtr(self):
+        with patch.object(validate.ConfigCheck, "__init__", lambda slf: None):
+            cc = validate.ConfigCheck()
+            cc.map = {'k': 'v'}
+            cc.files = ['file1', 'file2']
+            cc.issues = []
+            yield cc
+
+    @pytest.mark.parametrize("inp, outp", [['k = v', ('k', 'v')], 
+                                           ['k=v', ('k', 'v')],
+                                           ['  k= v  ', ('k', 'v')]])
+    def test_extract_k_v(self, fxtr, inp, outp):
+        out = fxtr.extract_k_v(inp)
+        assert out == (outp)
+
+    @patch('srv.modules.runners.validate.open', new_callable=mock_open, read_data='k = v')
+    def test_read_lines(self, open_mock, fxtr):
+        assert isinstance(fxtr.read_lines(fxtr.files[0]), types.GeneratorType)
+
+    @patch('validate.ConfigCheck.extract_k_v')
+    @patch('validate.ConfigCheck.compare_k_v_to_map')
+    def test_check_line(self, extract_mock, compare_mock, fxtr):
+        arg = 'k = v'
+        fxtr.check_line(arg)
+        import pdb;pdb.set_trace()
+        assert extract_mock.assert_called_with(arg)
+        assert compare_mock.assert_called_with(arg)
+

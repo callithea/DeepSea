@@ -1092,6 +1092,7 @@ class ConfigCheck(object):
         """
         for fn in self.files:
             for line in self.read_lines(fn):
+                import pdb;pdb.set_trace()
                 conf_object = self.check_line(line)
                 if not conf_object:
                     continue
