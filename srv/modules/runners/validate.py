@@ -967,15 +967,18 @@ class Validate(Preparation):
 
     def config_check(self):
         issue_map = ConfigCheck().run()
-        for fn, kv_map in issue_map.items():
-            for k, v in kv_map.items():
-                if not v:
-                    msg = "Key {} is deprecated please remove it from your config".format(k)
-                else:
-                    v = '/'.join(v)
-                    msg = "Key {} with value(s) {} was found (deprecated)".format(k, v)
+        for conf_obj in issue_map:
+            k = conf_obj.key
+            v = conf_obj.values
+            fn = conf_obj.filename
+            rl = conf_obj.release
+            if not v:
+                msg = "Key {} is deprecated. Please remove it from your config".format(k)
+            else:
+                v = '/'.join(v)
+                msg = "Key {} with value(s) {} was/were found (deprecated since {})".format(k, v, rl)
 
-                self.errors["{}::{}".format(fn,k)] = msg
+            self.errors["{}::{}".format(fn,k)] = msg
 
     def report(self):
         """
@@ -986,60 +989,147 @@ class Validate(Preparation):
 
 
 class ConfigCheck(object):
+    """Class to detect deprecated config values in files.
+
+
+    Attributes:
+        base_path (str): Base path
+        map_file (str): Map file path
+        conf_path (str): Conf file path
+        suffix (str): Suffix for config files
+        files (list): List of files from glob
+        map (dict): Map of deprecated k:v
+        issues (list): List of found incidents
+
+
+    """
     def __init__(self):
 
-        self.conf_path = '/srv/salt/ceph/configuration/files/ceph.conf.d'
+        self.base_path = '/srv/salt/ceph/configuration/files'
+        self.map_file = '{}/deprecated_map.yml'.format(self.base_path)
+        self.conf_path = '{}/ceph.conf.d'.format(self.base_path)
         self.suffix = '.conf'
         self.files = glob.glob("{path}/*{suffix}".format(path=self.conf_path,
                                                          suffix=self.suffix))
+        self.map = self.load_map()
+        self.issues = []
 
-        self.map = {'foo': 'bar',
-                    'multi': ['baz', 'qox'],
-                    'fulti': 'mox',
-                    'dummy': ['value'],
-                    'depre': []}
-        self.issues = {}
+    def load_map(self):
+        """
+        Loads k:v map from disk
+
+        Returns:
+            YAML map
+        Raises:
+            YAMLError
+        """
+        with open(self.map_file, 'r') as _fd:
+            try:
+                return yaml.load(_fd)
+            except yaml.YAMLError as exc:
+                raise exc
 
     def read_lines(self, fn):
+        """ Reads lines from an open file and returns a generator
+        Args:
+            fn (str): filename
+        Yields:
+            str: line from file
+        """
         with open(fn, 'r') as _fd:
             for line in _fd.readlines():
                 yield line
 
     def extract_k_v(self, line):
+        """ Extracts key and value from line
+        Args:
+            line (str): line from file
+        Returns:
+            tuple: stripped key and value
+        """
         k, v = line.split('=')
         return k.strip(), v.strip()
 
     def check_line(self, line):
+        """ Checks a line for deprecated keys/values
+        Args:
+            line (str): line from file
+        Returns:
+            DeprecatedConf: instance of obj
+        """
         k, v = self.extract_k_v(line)
         return self.compare_k_v_to_map(k, v)
 
     def compare_k_v_to_map(self, k, v):
-        found_issues = {}
-        found_issues[k] = []
-        if k not in self.map:
-            return found_issues
-        if isinstance(self.map[k], list):
-            for depr_val in self.map[k]:
-                if v == depr_val:
-                    found_issues[k].append(v)
-        if isinstance(self.map[k], str):
-            found_issues[k] = [v]
-        return found_issues
+        """ Compares k:v against a map of k:v that are know to be deprecated
+        Args:
+            k (str): key from config
+            v (str): value from config
+        Returns:
+            DeprecatedConf: instance of obj or None
+        """
+        obj = None
+        for release, kv_map in self.map.items():
+            if k not in kv_map:
+                continue
+            if isinstance(kv_map[k], list):
+                obj = DeprecatedConf(key=k,
+                                     release=release)
+                for depr_val in kv_map[k]:
+                    if v == depr_val:
+                        obj.add_value(depr_val)
+            if isinstance(kv_map[k], str):
+                if kv_map[k] == v:
+                    obj = DeprecatedConf(key=k,
+                                         release=release,
+                                         values=[v])
+        return obj
 
     def run(self):
+        """ 
+        Returns:
+            list: contains objects of DeprecatedConf
+        """
         for fn in self.files:
-            self.issues[fn] = {}
             for line in self.read_lines(fn):
-                found = self.check_line(line)
-                key = [x for x in found.keys()][0]
-                values = [x for x in found.values()][0]
-                if self.issues[fn].get(key):
-                    self.issues[fn][key].extend(values)
-                else:
-                    self.issues[fn].update(found)
-        print(self.issues)
+                conf_object = self.check_line(line)
+                if not conf_object:
+                    continue
+                conf_object.set_filename(fn)
+                self.issues.append(conf_object)
         return self.issues
 
+
+class DeprecatedConf(object):
+    """Simple class to store and access information conveniently.
+
+    Attributes:
+        filename (str): Filename the k:v is associated with
+        release (str): Release the k:v is deprecated in
+        key (str): Name of the key
+        value (list): List of found deprecated values
+    """
+
+    def __init__(self, **kwargs):
+        self.filename = kwargs.get('filename', None)
+        self.release = kwargs.get('release', None)
+        self.key = kwargs.get('key', None)
+        self.values = kwargs.get('values', [])
+
+    def add_value(self, value):
+        """ Adds value to values attribute
+        Args:
+            value (str): Deprecated config value
+        """
+        self.values.append(value)
+    
+    def set_filename(self, fn):
+        """ Sets filename
+        Args:
+            fn (str): Filename the object is associated with
+        """
+        self.filename = fn
+    
 
 def help_():
     """
